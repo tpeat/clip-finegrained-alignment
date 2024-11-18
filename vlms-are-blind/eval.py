@@ -1,4 +1,6 @@
 import os
+import sys
+import types
 import torch
 from PIL import Image
 import numpy as np
@@ -19,16 +21,24 @@ class CLIPEvaluator:
         
         self.model = CLIPModel.from_pretrained(model_name).to(self.device)
 
-        if checkpoint_path:
-            logger.info(f"Loading finetuned weights from {checkpoint_path}")
-            checkpoint = torch.load(
-                checkpoint_path, 
-                map_location=self.device,
-                # Skip loading config class
-                pickle_module=PickleModuleWrapper
-            )
-            self.model.load_state_dict(checkpoint['model_state_dict'])
-            logger.info("Successfully loaded finetuned weights")
+        try:
+            # Load checkpoint with specific map_location
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            
+            # Load only the model state dict
+            if 'model_state_dict' in checkpoint:
+                missing, unexpected = self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                if missing:
+                    logger.warning(f"Missing keys in checkpoint: {missing}")
+                if unexpected:
+                    logger.warning(f"Unexpected keys in checkpoint: {unexpected}")
+                logger.info("Successfully loaded finetuned weights")
+            else:
+                logger.error("Checkpoint does not contain model_state_dict")
+                raise KeyError("Invalid checkpoint format")
+        except Exception as e:
+            logger.error(f"Error loading checkpoint: {str(e)}")
+            raise
 
         self.processor = CLIPProcessor.from_pretrained(model_name)
 
@@ -333,12 +343,6 @@ class CLIPEvaluator:
             'high_confidence_accuracy': high_conf_accuracy
         }
 
-class PickleModuleWrapper:
-    @staticmethod
-    def find_class(mod_name, name):
-        if mod_name == "config":
-            return object  # Return dummy class for config
-        return __import__(mod_name, fromlist=[name]).__getattr__(name)
 
 def main():
     dataset = load_dataset("XAI/vlmsareblind")

@@ -193,12 +193,18 @@ class CLIPFineTuner:
 
     def save_checkpoint(self, filename: str):
         path = os.path.join(self.checkpoint_dir, filename)
-        torch.save({
+        # Convert config to dict if it's not already
+        config_dict = self.config.__dict__ if hasattr(self.config, '__dict__') else self.config
+        
+        checkpoint = {
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'config': self.config,
+            'config': config_dict,
             'global_step': self.global_step,
-        }, path)
+        }
+        
+        # Use torch.save with specific protocol version
+        torch.save(checkpoint, path, _use_new_zipfile_serialization=True)
         print(f"Saved checkpoint to {path}")
 
 
