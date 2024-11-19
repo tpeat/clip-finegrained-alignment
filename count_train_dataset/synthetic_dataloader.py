@@ -27,6 +27,31 @@ class CLIPSyntheticDataset(Dataset):
 
         self.max_length = self.preprocess.tokenizer.model_max_length
 
+        self.valid_numbers = list(range(1, 21))  # Adjust range as needed
+        self.word_to_number = {
+            'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+            'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10
+        }
+
+    def extract_number(self, template):
+        words = template.lower().split()
+        first_index = float('inf')
+        found_number = None
+        
+        for i, word in enumerate(words):
+            # Check numeric form
+            for num in self.valid_numbers:
+                if str(num) == word and i < first_index:
+                    first_index = i
+                    found_number = num
+                    break
+            # Check word form
+            if word in self.word_to_number and i < first_index:
+                first_index = i
+                found_number = self.word_to_number[word]
+        
+        return found_number if found_number is not None else 0
+
     def __len__(self) -> int:
         return len(self.annotations)
 
@@ -34,6 +59,8 @@ class CLIPSyntheticDataset(Dataset):
         """Get a single image-caption pair"""
         sample = self.annotations[idx]
         caption = sample['caption']
+        count = self.extract_number(caption)
+        count_features = torch.tensor([count], dtype=torch.float32)
 
         image_path = os.path.join(self.image_dir, sample['image_path'])
         image = Image.open(image_path).convert('RGB')
@@ -48,7 +75,11 @@ class CLIPSyntheticDataset(Dataset):
             truncation=True
         )
         
-        return (inputs['pixel_values'].squeeze(0), inputs['input_ids'].squeeze(0))
+        return (
+            inputs['pixel_values'].squeeze(0), 
+            inputs['input_ids'].squeeze(0),
+            count_features
+            )
 
 def create_clip_dataloader(
     annotations_file: str,
@@ -71,8 +102,6 @@ def create_clip_dataloader(
     
     sampler = None
     if distributed:
-        if not all([world_size, rank]):
-            raise ValueError("world_size and rank required for distributed training")
         sampler = DistributedSampler(
             dataset,
             num_replicas=world_size,

@@ -302,7 +302,8 @@ class COCOSyntheticDataset(COCOBaseDataset):
                             'image_path': src_sample['image_path'],
                             'bbox': obj_bbox,
                             'label': obj_label
-                        }
+                        }, 
+                        'count': num_placements
                     }
                     
                     if annotation_mode != 'count':
