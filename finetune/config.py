@@ -23,4 +23,5 @@ class CLIPFineTuneConfig:
     betas: Tuple[float, float] = (0.9, 0.999)  # Changed: Added type annotation
     eps: float = 1e-8
     amsgrad: bool = False
+    count_alpha: float = 0.5
     

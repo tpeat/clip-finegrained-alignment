@@ -11,12 +11,18 @@ import copy
 import argparse
 
 from dummy_data import create_coco_dataloaders
-from losses import CustomCLIPLoss, SPARCLoss
+from losses import CustomCLIPLoss, SPARCLoss, CLIPCountLoss
 from config import CLIPFineTuneConfig
 from optimizers import AdamSPD
 
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
+
+from count_train_dataset.synthetic_dataloader import create_clip_dataloader
+
 class CLIPFineTuner:
-    def __init__(self, config: CLIPFineTuneConfig):
+    def __init__(self, config: CLIPFineTuneConfig, checkpoint_path=None):
         self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
@@ -26,6 +32,9 @@ class CLIPFineTuner:
         if config.loss_type == "sparc":
             self.criterion = SPARCLoss(config).to(self.device)
             print("Using SPARC loss")
+        elif config.loss_type == "count":
+            self.criterion = CLIPCountLoss(temperature=0.07, count_alpha=config.count_alpha).to(self.device)
+            print(f"Using CLIP+Count loss with alpha={config.count_alpha}")
         else:
             self.criterion = CustomCLIPLoss().to(self.device)
             print("Using standard CLIP loss")
@@ -34,11 +43,16 @@ class CLIPFineTuner:
         print(f"Using optimizer: {type(self.optimizer).__name__}")
 
         self.global_step = 0 
+        self.best_loss = float('inf')
 
         self.checkpoint_dir = os.path.join("checkpoints", config.experiment_name)
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         
         self.scaler = GradScaler() if config.use_amp else None
+
+        if checkpoint_path:
+            self.load_checkpoint(checkpoint_path)
+            print(f"Resumed from checkpoint: {checkpoint_path}")
         
         print(f"Model loaded and initialized on {self.device}")
         
@@ -89,7 +103,11 @@ class CLIPFineTuner:
             return torch.optim.AdamW(optimizer_params, lr=self.config.lr)
 
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        images, texts = batch
+        if len(batch) == 3:
+            images, texts, count_features = batch
+            count_features.to(self.device)
+        else:
+            images, texts = batch
         images = images.to(self.device)
         texts = texts.to(self.device)
 
@@ -114,6 +132,10 @@ class CLIPFineTuner:
                         l_token_embed,
                         language_mask
                     )
+                elif self.config.loss_type == "count":
+                    image_features = outputs.image_embeds
+                    text_features = outputs.text_embeds
+                    losses = self.criterion(image_features, text_features, count_features)
                 else:
                     image_features = outputs.image_embeds
                     text_features = outputs.text_embeds
@@ -143,6 +165,10 @@ class CLIPFineTuner:
                     l_token_embed,
                     language_mask
                 )
+            elif self.config.loss_type == "count":
+                image_features = outputs.image_embeds
+                text_features = outputs.text_embeds
+                losses = self.criterion(image_features, text_features, count_features)
             else:
                 image_features = outputs.image_embeds
                 text_features = outputs.text_embeds
@@ -184,16 +210,48 @@ class CLIPFineTuner:
             avg_loss = sum(epoch_losses) / len(epoch_losses)
             print(f"Epoch {epoch + 1}/{num_epochs}, Average Loss: {avg_loss:.4f}")
             
-            if avg_loss < best_loss:
-                best_loss = avg_loss
+            if avg_loss < self.best_loss:
+                self.best_loss = avg_loss
+                print(f"New best loss: {self.best_loss:.4f}")
                 self.save_checkpoint('best.pt')
 
             if (epoch + 1) % 5 == 0:
                 self.save_checkpoint(f'epoch_{epoch + 1}.pt')
 
+    def load_checkpoint(self, checkpoint_path: str):
+        """Load model, optimizer, and training state from checkpoint."""
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
+        
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        
+        # Load model state
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        
+        # Load optimizer state
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        # Load other training state
+        self.global_step = checkpoint['global_step']
+        if 'best_loss' in checkpoint:
+            self.best_loss = checkpoint['best_loss']
+        
+        # Load scaler state if it exists
+        if self.config.use_amp and 'scaler_state_dict' in checkpoint:
+            self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
+            
+        print(f"Loaded checkpoint from step {self.global_step}")
+        
+        # Verify config matches
+        saved_config = checkpoint['config']
+        for key, value in saved_config.items():
+            if hasattr(self.config, key) and getattr(self.config, key) != value:
+                print(f"Warning: Current config {key}={getattr(self.config, key)} "
+                      f"differs from checkpoint config {key}={value}")
+
     def save_checkpoint(self, filename: str):
+        """Save model, optimizer, and training state to checkpoint."""
         path = os.path.join(self.checkpoint_dir, filename)
-        # Convert config to dict if it's not already
         config_dict = self.config.__dict__ if hasattr(self.config, '__dict__') else self.config
         
         checkpoint = {
@@ -201,9 +259,12 @@ class CLIPFineTuner:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'config': config_dict,
             'global_step': self.global_step,
+            'best_loss': self.best_loss
         }
         
-        # Use torch.save with specific protocol version
+        if self.config.use_amp:
+            checkpoint['scaler_state_dict'] = self.scaler.state_dict()
+        
         torch.save(checkpoint, path, _use_new_zipfile_serialization=True)
         print(f"Saved checkpoint to {path}")
 
@@ -212,10 +273,14 @@ def main():
     parser = argparse.ArgumentParser(description='Finetune CLIP model')
     parser.add_argument('--exp_name', type=str, default="clip_coco_finetune",
                         help='experiment name')
-    parser.add_argument('--loss_type', type=str, default="clip", choices=['clip', 'sparc'],
-                        help='loss function to use (clip or sparc)')
+    parser.add_argument('--loss_type', type=str, default="clip", 
+                    choices=['clip', 'sparc', 'count'])
     parser.add_argument('--optimizer', type=str, default="adamw", choices=['adamw', 'adamspd'],
                         help='optimizer to use (adamw or adamspd)')
+    parser.add_argument('--epochs', type=int, default=10, 
+                        help='optimizer to use (adamw or adamspd)')
+    parser.add_argument('--resume', type=str,
+                        help='path to checkpoint to resume from')
     args = parser.parse_args()
 
     random.seed(42)
@@ -248,16 +313,31 @@ def main():
         amsgrad=False,
     )
 
-    dataloader = create_coco_dataloaders(
-        root_dir='../dataset/coco/train2017',
-        ann_file='../dataset/coco/annotations/captions_train2017.json',
-        batch_size=config.batch_size,
-        model_name=model_name,
-        max_samples=1000
+    # dataloader = create_coco_dataloaders(
+    #     root_dir='../dataset/coco/train2017',
+    #     ann_file='../dataset/coco/annotations/captions_train2017.json',
+    #     batch_size=config.batch_size,
+    #     model_name=model_name,
+    #     max_samples=1000
+    # )
+    annotations_file = "../count_train_dataset/synthetic_dataset/synthetic_annotations.json"
+    image_dir = "../count_train_dataset/"
+    
+    dataloader, dataset = create_clip_dataloader(
+        annotations_file=annotations_file,
+        image_dir=image_dir,
+        batch_size=32,
+        num_workers=1
     )
 
-    finetuner = CLIPFineTuner(config)
-    finetuner.train(dataloader, num_epochs=5)
+    finetuner = CLIPFineTuner(config, checkpoint_path=args.resume if args.resume else None)
+
+    start_epoch = 0
+    if args.resume:
+        start_epoch = finetuner.global_step // len(dataloader)
+        print(f"Resuming from epoch {start_epoch}")
+
+    finetuner.train(dataloader, num_epochs=args.epochs)
 
 if __name__ == "__main__":
     main()

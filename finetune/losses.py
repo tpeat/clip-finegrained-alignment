@@ -36,6 +36,87 @@ class CustomCLIPLoss(nn.Module):
         return losses
 
 
+class CLIPCountLoss(nn.Module):
+    def __init__(self, temperature: float = 0.07, count_alpha: float = 0.5):
+        super().__init__()
+        self.temperature = temperature
+        self.cross_entropy = nn.CrossEntropyLoss()
+        self.count_alpha = count_alpha
+        
+    def count_loss(self, ei: torch.Tensor, ek: torch.Tensor, 
+                   ek_cf: torch.Tensor, countplus: bool = False) -> torch.Tensor:
+        device = ei.device
+        
+        if not countplus:
+            # one counterfactual, impossible in current dataset, but for sake of completeness
+            ei = ei.to(device, dtype=torch.float64)
+            ek = ek.to(device, dtype=torch.float64)
+            ek_cf = ek_cf.to(device, dtype=torch.float64)
+            
+            ei = ei / ei.norm(dim=-1, keepdim=True)
+            ek = ek / ek.norm(dim=-1, keepdim=True)
+            ek_cf = ek_cf / ek_cf.norm(dim=-1, keepdim=True)
+            
+            sim_pos = torch.sum(ei * ek, dim=-1)
+            sim_neg = torch.sum(ei * ek_cf, dim=-1)
+            
+            loss = -torch.log(torch.exp(sim_pos) / (torch.exp(sim_pos) + torch.exp(sim_neg)))
+            return loss.mean()
+        else:
+            # multiple negatives
+            ei = ei.to(device, dtype=torch.float64)
+            ek = ek.to(device, dtype=torch.float64)
+            ek_cf = ek_cf.to(device, dtype=torch.float64)
+            
+            ei = ei / ei.norm(dim=-1, keepdim=True)
+            ek = ek / ek.norm(dim=-1, keepdim=True)
+            
+            num = torch.exp(torch.sum(ei * ek, dim=-1))
+            deno = torch.zeros_like(num)
+            
+            # use size of e_f for flexible number of inputs in the future
+            num_counterfactuals = len(ek_cf)
+            for i in range(num_counterfactuals):
+                e = ek_cf[i].to(device, dtype=torch.float64)
+                e = e / e.norm(dim=-1, keepdim=True)
+                deno += torch.exp(torch.sum(ei * e, dim=-1))
+            
+            loss = -torch.log(num / (num + deno))
+            return loss.mean()
+
+    def forward(self, image_features: torch.Tensor, text_features: torch.Tensor,
+                count_features: Optional[torch.Tensor] = None,
+                countplus: bool = False) -> Dict[str, torch.Tensor]:
+        device = image_features.device
+        
+        # vanilla slip loss
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+        
+        logits = (image_features @ text_features.t()) / self.temperature
+        labels = torch.arange(len(image_features), device=device)
+        
+        loss_i = self.cross_entropy(logits, labels)
+        loss_t = self.cross_entropy(logits.t(), labels)
+        clip_loss = (loss_i + loss_t) / 2.0
+        
+        # weights loss by alpha, but its really lambda
+        count_loss = torch.tensor(0.0, device=device)
+        if count_features is not None:
+            count_features = count_features.to(device)
+            count_loss = self.count_loss(image_features, text_features, 
+                                       count_features, countplus) * self.count_alpha
+        
+        # in original paper, they use lambda as the weight
+        total_loss = clip_loss + count_loss
+        
+        return {
+            "clip_loss": clip_loss,
+            "count_loss": count_loss,
+            "total_loss": total_loss
+        }
+
+
 class SPARCLoss(nn.Module):
     """Implementation based on https://arxiv.org/abs/2401.09865"""
     def __init__(self, config):
