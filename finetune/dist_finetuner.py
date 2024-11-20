@@ -9,6 +9,7 @@ from tqdm import tqdm
 import random
 import numpy as np
 import os
+import time
 import copy
 import argparse
 
@@ -22,6 +23,20 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from count_train_dataset.synthetic_dataloader import create_clip_dataloader
+
+class DistributedLogger:
+    def __init__(self, local_rank):
+        self.local_rank = local_rank
+        self.step_timestamps = {}
+    
+    def log_step(self, step_name, extra_info=""):
+        timestamp = time.time()
+        if self.local_rank == 0:
+            print(f"[Rank {self.local_rank}] {step_name}: {extra_info} at {timestamp}")
+        self.step_timestamps[step_name] = timestamp
+        
+        # Force flush stdout to ensure logs are written
+        sys.stdout.flush()
 
 class DistributedCLIPFineTuner:
     def __init__(self, config: CLIPFineTuneConfig, local_rank: int, checkpoint_path=None):
@@ -40,6 +55,8 @@ class DistributedCLIPFineTuner:
         
         # Wrap model in DDP
         self.model = DDP(self.model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+        
+        self.logger = DistributedLogger(local_rank)
         
         # Updated loss function initialization
         if config.loss_type == "sparc":
@@ -202,7 +219,7 @@ class DistributedCLIPFineTuner:
         self.model.train()
         
         for epoch in range(num_epochs):
-            # Important for proper shuffling in distributed training
+            self.logger.log_step(f"epoch_{epoch}_start")
             train_dataloader.sampler.set_epoch(epoch)
             epoch_losses = []
             
@@ -224,23 +241,43 @@ class DistributedCLIPFineTuner:
                         'avg_loss': f'{sum(epoch_losses) / len(epoch_losses):.4f}'
                     })
             
-            # Gather losses from all processes
-            all_losses = [torch.zeros_like(torch.tensor(epoch_losses)) for _ in range(dist.get_world_size())]
-            dist.all_gather(all_losses, torch.tensor(epoch_losses, device=self.device))
+            # Calculate local mean loss
+            local_mean_loss = torch.tensor(sum(epoch_losses) / len(epoch_losses), 
+                                        device=self.device, dtype=torch.float32)
             
-            if self.local_rank == 0:
-                # Calculate global average loss across all processes
-                all_losses = torch.cat(all_losses)
-                avg_loss = all_losses.mean().item()
-                print(f"Epoch {epoch + 1}/{num_epochs}, Average Loss: {avg_loss:.4f}")
+            # Gather mean losses from all processes
+            gathered_losses = [torch.zeros_like(local_mean_loss, device=self.device) 
+                            for _ in range(dist.get_world_size())]
+            
+            self.logger.log_step(f"epoch_{epoch}_before_loss_gather")
+            torch.distributed.barrier()
+            self.logger.log_step(f"epoch_{epoch}_after_barrier")
+            
+            try:
+                dist.all_gather(gathered_losses, local_mean_loss)
+                self.logger.log_step(f"epoch_{epoch}_after_loss_gather")
                 
-                if avg_loss < self.best_loss:
-                    self.best_loss = avg_loss
-                    print(f"New best loss: {self.best_loss:.4f}")
-                    self.save_checkpoint('best.pt')
+                if self.local_rank == 0:
+                    # Calculate global average loss
+                    global_mean_loss = torch.stack(gathered_losses).mean().item()
+                    print(f"Epoch {epoch + 1}/{num_epochs}, Average Loss: {global_mean_loss:.4f}")
+                    
+                    if global_mean_loss < self.best_loss:
+                        self.best_loss = global_mean_loss
+                        print(f"New best loss: {self.best_loss:.4f}")
+                        self.save_checkpoint('best.pt')
 
-                if (epoch + 1) % 5 == 0:
-                    self.save_checkpoint(f'epoch_{epoch + 1}.pt')
+                    if (epoch + 1) % 5 == 0:
+                        self.save_checkpoint(f'epoch_{epoch + 1}.pt')
+            
+            except Exception as e:
+                self.logger.log_step(f"epoch_{epoch}_loss_gather_failed", str(e))
+                # Continue training even if gathering fails
+                torch.distributed.barrier()
+                pass
+            
+            # Make sure all processes are synced before next epoch
+            torch.distributed.barrier()
 
     def load_checkpoint(self, checkpoint_path: str):
         """Load model, optimizer, and training state from checkpoint."""
@@ -275,23 +312,39 @@ class DistributedCLIPFineTuner:
 
     def save_checkpoint(self, filename: str):
         """Save model, optimizer, and training state to checkpoint."""
+        # First synchronize all processes
+        torch.distributed.barrier()
+        
         if self.local_rank == 0:  # Save only on main process
-            path = os.path.join(self.checkpoint_dir, filename)
-            config_dict = self.config.__dict__ if hasattr(self.config, '__dict__') else self.config
-            
-            checkpoint = {
-                'model_state_dict': self.model.module.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'config': config_dict,
-                'global_step': self.global_step,
-                'best_loss': self.best_loss
-            }
-            
-            if self.config.use_amp:
-                checkpoint['scaler_state_dict'] = self.scaler.state_dict()
-            
-            torch.save(checkpoint, path, _use_new_zipfile_serialization=True)
-            print(f"Saved checkpoint to {path}")
+            try:
+                path = os.path.join(self.checkpoint_dir, filename)
+                config_dict = self.config.__dict__ if hasattr(self.config, '__dict__') else self.config
+                
+                # Make sure all tensors are on CPU before saving
+                checkpoint = {
+                    'model_state_dict': {k: v.cpu() for k, v in self.model.module.state_dict().items()},
+                    'optimizer_state_dict': {k: v.cpu() if isinstance(v, torch.Tensor) else v 
+                                        for k, v in self.optimizer.state_dict().items()},
+                    'config': config_dict,
+                    'global_step': self.global_step,
+                    'best_loss': self.best_loss
+                }
+                
+                if self.config.use_amp:
+                    checkpoint['scaler_state_dict'] = self.scaler.state_dict()
+                
+                # Save with a temporary file first
+                tmp_path = path + '.tmp'
+                torch.save(checkpoint, tmp_path)
+                os.replace(tmp_path, path)  # Atomic operation
+                
+                print(f"Saved checkpoint to {path}")
+            except Exception as e:
+                print(f"Error saving checkpoint: {str(e)}")
+                raise e
+        
+        # Wait for the saving to complete before continuing
+        torch.distributed.barrier()
 
 def main():
     parser = argparse.ArgumentParser(description='Distributed Finetune CLIP model')
@@ -369,4 +422,5 @@ if __name__ == "__main__":
         mp.set_start_method('spawn')
     except RuntimeError:
         pass
+    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
     main()

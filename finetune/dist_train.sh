@@ -2,9 +2,9 @@
 #SBATCH -Jvlmtrain
 #SBATCH -N1                    # Number of nodes
 #SBATCH --ntasks-per-node=2    # Number of tasks (processes) per node - set this to number of GPUs
-#SBATCH --mem-per-gpu 8GB     
+#SBATCH --mem-per-gpu 32GB     
 #SBATCH -G V100:2                # Number of GPUs - make sure this matches ntasks-per-node
-#SBATCH -t 00:10:00
+#SBATCH -t 01:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH -oReport-%j.out
 
@@ -24,6 +24,7 @@ EXP_NAME="dist_clip_spd_v1"
 EPOCHS=100
 LOSS_TYPE="clip"
 OPTIM="adamspd"
+CKPT="checkpoints/dist_clip_spd_v1/best.pt"
 
 nvidia-smi
 
@@ -46,4 +47,5 @@ echo "Number of GPUs allocated: $NUM_GPUS"
     --exp_name $EXP_NAME \
     --epochs $EPOCHS \
     --loss_type $LOSS_TYPE \
-    --optimizer $OPTIM
+    --optimizer $OPTIM \
+    --resume $CKPT
