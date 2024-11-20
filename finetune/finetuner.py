@@ -191,8 +191,10 @@ class CLIPFineTuner:
     def train(self, train_dataloader: DataLoader, num_epochs: int):
         self.model.train()
         best_loss = float('inf')
+
+        start_epoch = self.global_step // len(train_dataloader)
         
-        for epoch in range(num_epochs):
+        for epoch in range(start_epoch, num_epochs):
             epoch_losses = []
             progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch + 1}/{num_epochs}")
             
@@ -216,6 +218,8 @@ class CLIPFineTuner:
                 self.save_checkpoint('best.pt')
 
             if (epoch + 1) % 5 == 0:
+                # real epoch
+                epoch = self.global_step // len(train_dataloader)
                 self.save_checkpoint(f'epoch_{epoch + 1}.pt')
 
     def load_checkpoint(self, checkpoint_path: str):
