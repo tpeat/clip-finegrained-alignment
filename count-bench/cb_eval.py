@@ -25,7 +25,7 @@ from viz import (save_debug_image, plot_single_template_probabilities,
 class CountBenchEvaluator:
     def __init__(self, model_name="openai/clip-vit-base-patch32", confidence=0.5, margin=0.1, 
                  checkpoint_path=None, number_format="numeric", debug=False, samples_of_interest=None,
-                 template_position='first'):
+                 template_position='first', output_dir="results"):
         """Initialize the CountBench evaluator.
         
         Args:
@@ -39,7 +39,11 @@ class CountBenchEvaluator:
         logger.info(f"Using device: {self.device}")
 
         self.debug = debug
-        self.debug_dir = "results/debug" if debug else None
+        self.output_dir = output_dir
+        self.debug_dir = os.path.join(output_dir, "debug") if debug else None
+        if debug:
+            os.makedirs(self.debug_dir, exist_ok=True)
+            
         self.samples_of_interest = set(samples_of_interest) if samples_of_interest else set()
         self.template_position = template_position
         
@@ -440,7 +444,8 @@ def main():
         number_format=args.number_format,
         debug=args.debug,
         samples_of_interest=args.samples,
-        template_position=args.template_position
+        template_position=args.template_position,
+        output_dir=args.output_dir
     )
 
     results = evaluator.evaluate_dataset(dataset['train'])
