@@ -39,13 +39,11 @@ detection_results = []
 
 for data_point in tqdm(synthetic_data, desc="Processing images"):
     try:
-        # Load image
         image_path = data_point["image_path"]
         
         img = Image.open(image_path).convert("RGB")
         # img = preprocess(img).unsqueeze(0).to(device)
 
-        # Generate anchor features (simulate anchor coordinates)
         img_width, img_height = img.size
         grid_size=128
         anchor_coords = [
@@ -53,7 +51,6 @@ for data_point in tqdm(synthetic_data, desc="Processing images"):
         ]
         anchor_features = detector.get_anchor_features(img, anchor_coords, bs=128)
 
-        # Detect objects using category names
         detection_img, detection_result, thr = detector.detect_by_text(
             texts=categories,
             img=img,
@@ -65,14 +62,12 @@ for data_point in tqdm(synthetic_data, desc="Processing images"):
             skip_box_thr=0.5,  # Confidenc
         )
 
-        # Save detection results
         detection_results.append({
             "image_path": image_path,
             "detections": detection_result,
             "threshold": thr,
         })
 
-        # Print results for each image
         print(f"Processed {image_path}")
         for box, score, label in zip(
             detection_result["boxes"], detection_result["scores"], detection_result["labels"]
@@ -84,7 +79,6 @@ for data_point in tqdm(synthetic_data, desc="Processing images"):
         print(f"Error processing {image_path}: {e}")
         continue
 
-# Save results to a JSON file
 results_path = "/storage/ice1/9/3/kkundurthy3/synthetic_dataset/detection_results.json"
 with open(results_path, "w") as f:
     json.dump(detection_results, f, indent=4)
