@@ -421,6 +421,9 @@ def main():
                     help='Path to save the synthetic dataset')
     parser.add_argument('--max_obj', type=int, default=5,
                     help='Max Objects that be added to image')
+    parser.add_argument('--split', type=str, default='train', choices=['train', 'val'],
+                    help='Dataset split to process: train or val')
+
 
     args = parser.parse_args()
 
@@ -429,10 +432,10 @@ def main():
     output_dir  = args.output_dir
     dataset = COCOSyntheticDataset(coco_dir=coco_dir,output_dir = output_dir)
 
-    dataset.train_data = dataset.create_detection_dataset('train')
+    dataset.train_data = dataset.create_detection_dataset(args.split)
 
     synthetic_data = dataset.create_dataset(
-        num_samples=args.num_samples, 
+        num_samples=args.num_samples,
         max_objects=args.max_objects,
         size_category=args.size_category,
         annotation_mode=args.annotation_mode
