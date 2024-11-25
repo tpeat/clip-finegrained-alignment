@@ -314,20 +314,30 @@ class COCOSyntheticDataset(COCOBaseDataset):
                             'bbox': obj_bbox,
                             'label': obj_label
                         }, 
-                        'count': num_placements
+                        'count': num_placements,
+                        'boxes': new_boxes,
+                        'labels' : new_labels
                     }
                     
-                    if annotation_mode != 'count':
-                        annotation.update({
-                            'boxes': new_boxes,
-                            'labels': new_labels
-                        })
-                        if annotation_mode == 'integer':
-                            annotation['box_integers'] = box_integers
+                    # if annotation_mode != 'count':
+                    #     annotation.update({
+                    #         'boxes': new_boxes,
+                    #         'labels': new_labels
+                    #     })
+                    if annotation_mode == 'integer':
+                        annotation['box_integers'] = box_integers
                     
                     synthetic_dataset.append(annotation)
                         
                     pbar.update(1)
+
+                    # failure recovery for scaling to 300k images -- saving intermediate json every 10k images
+                    if (len(synthetic_dataset) % 10000 == 0):
+                        intermediate_file = os.path.join(self.output_dir, f'synthetic_annotations_{idx + 1}.json')
+                        with open(intermediate_file, 'w') as f:
+                            json.dump({"metadata": metadata, "annotations": synthetic_dataset}, f)
+                        print(f"Saved intermediate JSON: {intermediate_file}")
+
                     
                 except Exception as e:
                     print(f"Error processing image: {e}")
