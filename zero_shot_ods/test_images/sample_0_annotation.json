@@ -1,0 +1,70 @@
+{
+    "image_path": "/storage/ice1/9/3/kkundurthy3/synthetic_val/synthetic_145.png",
+    "width": 375,
+    "height": 500,
+    "caption": "A photo of  with 7 donuts",
+    "source_object": {
+        "image_path": "/storage/ice1/9/3/kkundurthy3/dataset/coco/val2017/000000405195.jpg",
+        "bbox": [
+            277.22,
+            222.95,
+            323.70000000000005,
+            243.63
+        ],
+        "label": 60
+    },
+    "count": 7,
+    "boxes": [
+        [
+            183,
+            249,
+            229,
+            270
+        ],
+        [
+            292,
+            85,
+            338,
+            106
+        ],
+        [
+            52,
+            46,
+            98,
+            67
+        ],
+        [
+            229,
+            417,
+            275,
+            438
+        ],
+        [
+            248,
+            28,
+            294,
+            49
+        ],
+        [
+            119,
+            411,
+            165,
+            432
+        ],
+        [
+            32,
+            190,
+            78,
+            211
+        ]
+    ],
+    "labels": [
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60
+    ]
+}
