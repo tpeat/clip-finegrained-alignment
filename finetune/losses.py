@@ -76,10 +76,30 @@ class CLIPCountLoss(nn.Module):
             
             # use size of e_f for flexible number of inputs in the future
             num_counterfactuals = len(ek_cf)
-            for i in range(num_counterfactuals):
-                e = ek_cf[i].to(device, dtype=torch.float64)
-                e = e / e.norm(dim=-1, keepdim=True)
-                deno += torch.exp(torch.sum(ei * e, dim=-1))
+
+            '''
+            Potential Optimization #1 Vecotrizing multiple negative handling
+            '''
+
+            # for i in range(num_counterfactuals):
+            #     e = ek_cf[i].to(device, dtype=torch.float64)
+            #     e = e / e.norm(dim=-1, keepdim=True)
+            #     deno += torch.exp(torch.sum(ei * e, dim=-1))
+
+            ei = ei.to(device, dtype=torch.float64)
+            ek = ek.to(device, dtype=torch.float64)
+            ek_cf = ek_cf.to(device, dtype=torch.float64)
+
+            # embedding norm
+            ei = ei / ei.norm(dim=-1, keepdim=True)  # [B, D]
+            ek = ek / ek.norm(dim=-1, keepdim=True)  # [B, D]
+            ek_cf = ek_cf / ek_cf.norm(dim=-1, keepdim=True)  # [N_cf, D]
+
+            num = torch.exp(torch.sum(ei * ek, dim=-1))  # [B]
+
+            sim_neg = torch.exp(torch.matmul(ei, ek_cf.T))  # [B, N_cf]
+            deno = sim_neg.sum(dim=-1)  # [B]
+
             
             loss = -torch.log(num / (num + deno))
             return loss.mean()
