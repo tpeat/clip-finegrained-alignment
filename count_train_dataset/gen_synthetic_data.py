@@ -12,7 +12,8 @@ import shutil
 from abc import ABC, abstractmethod
 
 SIZE_CATEGORIES = {
-    'small': (32, 96), # Should I make this even smaller? 
+    'extra_small' : (24,24),
+    'small': (32, 96),
     'medium': (96, 224),
     'large': (224, 640) 
 }
@@ -29,7 +30,8 @@ class COCOBaseDataset(ABC):
         self.val_coco = COCO(self.val_ann_file)
         self.caption_coco = COCO(self.captions_file)
 
-        self.categories = {cat['id']: cat['name'] for cat in self.train_coco.loadCats(self.train_coco.getCatIds())}
+        # all possible CLIP categories
+        self.categories = {category['id']: category['name'] for category in self.train_coco.loadCats(self.train_coco.getCatIds())}
         
         self.train_data = None
     
@@ -215,6 +217,15 @@ class COCOSyntheticDataset(COCOBaseDataset):
         max_size = max_size or (size_range[1] if size_range else 640)
         
         synthetic_dataset = []
+
+        metadata = {
+            "num_samples" : num_samples,
+            "max_objects" : max_objects,
+            "size_category" : size_category,
+            "min_size" : min_size,
+            "annotation_mode" : annotation_mode,
+            "using_count_captions" : annotation_mode== 'count'
+        }
         
         with tqdm(total=num_samples) as pbar:
             while len(synthetic_dataset) < num_samples:
@@ -324,7 +335,7 @@ class COCOSyntheticDataset(COCOBaseDataset):
         
         output_file = os.path.join(self.output_dir, 'synthetic_annotations.json')
         with open(output_file, 'w') as f:
-            json.dump(synthetic_dataset, f)
+            json.dump({"metadata": metadata, "annotations": synthetic_dataset}, f)
             
         return synthetic_dataset
 
@@ -394,12 +405,19 @@ def main():
                         help='Type of annotation to generate')
     parser.add_argument('--show_integers', action='store_true',
                         help='Show integer representations in visualization')
+    parser.add_argument('--coco_dir', type=str, default="../dataset/coco",
+                    help='Path to the COCO dataset directory')
+    parser.add_argument('--output_dir', type=str, default="./synthetic_dataset",
+                    help='Path to save the synthetic dataset')
+    parser.add_argument('--max_obj', type=int, default=5,
+                    help='Max Objects that be added to image')
 
     args = parser.parse_args()
 
 
-    coco_dir = "../dataset/coco"
-    dataset = COCOSyntheticDataset(coco_dir=coco_dir)
+    coco_dir = args.coco_dir
+    output_dir  = args.output_dir
+    dataset = COCOSyntheticDataset(coco_dir=coco_dir,output_dir = output_dir)
 
     dataset.train_data = dataset.create_detection_dataset('train')
 
