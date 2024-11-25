@@ -18,7 +18,7 @@ print(categories)
 
 
 
-with open("/storage/ice1/9/3/kkundurthy3/synthetic_dataset/synthetic_annotations.json", "r") as f:
+with open("/storage/ice1/9/3/kkundurthy3/synthetic_eval_bb/synthetic_annotations_bb.json", "r") as f:
     synthetic_data = json.load(f)
 
 
@@ -93,7 +93,7 @@ for data_point in tqdm(synthetic_data, desc="Processing images"):
         })
 
         if ctr % 5 == 0:
-            result_path = f"/storage/ice1/9/3/kkundurthy3/synthetic_dataset/detection_eval_result_{ctr}.json"
+            result_path = f"/storage/ice1/9/3/kkundurthy3/synthetic_eval_bb/detection_eval_result_{ctr}.json"
             with open(result_path, "w") as f:
                 json.dump(detection_results, f, indent=4)
 
@@ -110,7 +110,7 @@ for data_point in tqdm(synthetic_data, desc="Processing images"):
         continue
     
 
-results_path = "/storage/ice1/9/3/kkundurthy3/synthetic_dataset/detection_eval_results.json"
+results_path = "/storage/ice1/9/3/kkundurthy3/synthetic_eval_bb/detection_eval_results.json"
 with open(results_path, "w") as f:
     json.dump(detection_results, f, indent=4)
 
