@@ -10,5 +10,5 @@
 6. Final output processing using non-maximum supression to remove the overlapping boxes
 
 
-test_loader.py: randomly sample 5 images to be used for testing and debugging
-ods_eval.py: main file implementing this pipeline
+- test_loader.py: randomly sample 5 images to be used for testing and debugging
+- ods_eval.py: main file implementing this pipeline
