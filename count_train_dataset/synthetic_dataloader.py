@@ -21,7 +21,10 @@ class CLIPSyntheticDataset(Dataset):
         self.image_dir = image_dir
         
         with open(annotations_file, 'r') as f:
-            self.annotations = json.load(f)
+            data = json.load(f)
+            if 'annotations' not in data:
+                raise ValueError("The 'annotations' key is missing from the JSON file.")
+            self.annotations = data["annotations"]
             
         self.preprocess = CLIPProcessor.from_pretrained(model_name)
 

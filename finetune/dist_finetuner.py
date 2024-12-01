@@ -79,7 +79,7 @@ class DistributedCLIPFineTuner:
         self.global_step = 0
 
         if local_rank == 0:
-            self.checkpoint_dir = os.path.join("checkpoints", config.experiment_name)
+            self.checkpoint_dir = os.path.join("/storage/ice1/9/3/kkundurthy3/checkpoints", config.experiment_name)
             os.makedirs(self.checkpoint_dir, exist_ok=True)
         
         self.scaler = GradScaler('cuda') if config.use_amp else None
@@ -356,6 +356,7 @@ def main():
                         choices=['adamw', 'adamspd'])
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--resume', type=str, help='path to checkpoint to resume from')
+    parser.add_argument('--save', type=str, help='path to save checkpoint to')
     args = parser.parse_args()
 
     local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -393,8 +394,8 @@ def main():
         count_alpha=1.0,  # Added for count loss
     )
 
-    annotations_file = "../count_train_dataset/synthetic_dataset/synthetic_annotations.json"
-    image_dir = "../count_train_dataset/"
+    annotations_file = "/storage/ice1/9/3/kkundurthy3/synthetic_dataset/synthetic_annotations.json"
+    image_dir = "/storage/ice1/9/3/kkundurthy3/synthetic_dataset/"
     
     dataloader, _ = create_clip_dataloader(
         annotations_file=annotations_file,

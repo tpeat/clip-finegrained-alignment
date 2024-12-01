@@ -21,12 +21,23 @@ def parse_args():
     parser.add_argument("--confidence_threshold", type=float, default=0.5,
                         help="Threshold for bounding box confidence")
     parser.add_argument("--iou_threshold", type=float, default=0.3, help="IoU threshold for NMS")
+    parser.add_argument("--fine_tuned_model", type=str, default=None,
+                        help="Path to fine-tuned CLIP model weights (optional)")
     return parser.parse_args()
 
 
-def initialize_detector(pretrained_model, version, device):
-    print(f"Loading CLIP model: {pretrained_model} of the version {version}")
-    model, preprocess = load(pretrained_model, device=device)
+def initialize_detector(pretrained_model, version, device,fine_tuned_model=None):
+    print(f"Loading CLIP model: {pretrained_model} of version {version}")
+    model, preprocess = load(pretrained_model, device=device, jit=False)
+    if fine_tuned_model:
+        print(f"Attempting to load fine-tuned model weights from {fine_tuned_model}")
+        try:
+            state_dict = torch.load(fine_tuned_model, map_location=device)
+            model.load_state_dict(state_dict, strict=False)
+        except Exception as e:
+            print(f"Failed to load fine-tuned model. Error: {e}")
+            raise e
+    
     if version == "v0":
         return CLIPDetectorV0(model=model, transforms=preprocess, device=device), preprocess
     elif version == "v1":
@@ -109,15 +120,32 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"CUDA Available: {torch.cuda.is_available()}")
-    detector, preprocess = initialize_detector(args.pretrained_model, args.model_version, device)
+    file_path = "/home/hice1/kkundurthy3/CountDetectVLM/clip-finegrained-alignment/checkpoints/epoch_41.pt"
 
-    # Load COCO categories
+    try:
+        state_dict = torch.load(file_path, map_location="cpu")
+        if isinstance(state_dict, dict):
+            print("The file is a state dictionary.")
+        else:
+            print("The file is not a state dictionary.")
+    except Exception as e:
+        print(f"Failed to load the file. Error: {e}")
+
+    detector, preprocess = initialize_detector(
+        args.pretrained_model,
+        args.model_version,
+        device,
+        fine_tuned_model=args.fine_tuned_model
+    )
+
     val_ann_file = os.path.join(args.coco_dir, "annotations/instances_val2017.json")
     val_coco = COCO(val_ann_file)
     categories = {cat['id']: cat['name'] for cat in val_coco.loadCats(val_coco.getCatIds())}
 
     with open(args.synthetic_ann_file, "r") as f:
         synthetic_data = json.load(f)
+
+    
 
     os.makedirs(args.output_dir, exist_ok=True)
     detection_results = {
