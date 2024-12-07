@@ -7,22 +7,41 @@ Evaluate Region CLIP zero shot inference on a single image for testing purposes
 from detectron2.config import get_cfg
 from detectron2.engine import DefaultPredictor
 from detectron2.utils.visualizer import Visualizer
+from detectron2.data import MetadataCatalog
+
 import cv2
 import argparse
 import time
 
+cfg = get_cfg()
+pascal_freq_map = {'person': 17401, 'bottle': 1561, 'car': 2492, 'bicycle': 837, 'aeroplane': 1002, 'cat': 1277, 'boat': 1059, 'dog': 1598, 'bird': 1271, 'horse': 803, 'bus': 685, 'tvmonitor': 893, 'motorbike': 801, 'sheep': 1084, 'pottedplant': 1202, 'diningtable': 800, 'train': 704, 'chair': 3056, 'sofa': 841, 'cow': 771}
+pascal_classes = [f"a photo of {key}" for key in pascal_freq_map.keys()]
+coco_classes = MetadataCatalog.get("coco_2017_train").thing_classes
+classes = coco_classes + pascal_classes
+MetadataCatalog.get("pascal_eval").thing_classes = classes
+cfg.MODEL.ROI_HEADS.NUM_CLASSES = len(classes)
 
 def parse_args():
     parser= argparse.ArgumentParser(description="inference on single test image")
     parser.add_argument(
         "--image_path", type=str, help="path to img"
     )
+
+    parser.add_argument(
+        "--id", type=str, help="img id"
+    )
+
+    # parser.add_argument(
+    #     "--prompt", type=str, help="custom prompt"
+    # )
+    
     return parser.parse_args()
 
 def main():
     start_time=time.time()
     args = parse_args()
-    cfg = get_cfg()
+    img_id = args.id
+    
     
 
     # if not torch.cuda.is_available():
@@ -32,7 +51,7 @@ def main():
     #     print("using cuda")
     # print("____________________________")
 
-    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.2
+    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.4
     predictor = DefaultPredictor(cfg)
     image = cv2.imread(args.image_path)
     outputs = predictor(image)
@@ -40,16 +59,18 @@ def main():
     v = Visualizer(image[:, :, ::-1], metadata=None, scale=1.0)
     v = v.draw_instance_predictions(outputs["instances"].to("cpu"))
 
-    boxes= outputs["instances"].to("cpu").pred_boxes if outputs["instances"].to("cpu").has("pred_boxes") else None
+    boxes= outputs["instances"].to("cpu").pred_boxes if outputs["instances"].to("cpu").has("pred_boxes") else []
+    classes = outputs["instances"].to("cpu").pred_classes if outputs["instances"].to("cpu").has("pred_classes") else []
     if boxes:
         print("detected boxes: ")
         print(boxes.tensor.numpy())
-        with open("output_boxes.txt", "w") as f:
-            for box in boxes:
-                f.write(f"{box.tolist()}\n")
+        with open(f"output_boxes_and_classes_{img_id}.txt", "w") as f:
+            for box, cls in zip(boxes.tensor.numpy(), classes.numpy()):
+                f.write(f"Box: {box.tolist()}, Class: {cls}\n")
+                print(f"Box: {box}, Class: {cls}")
 
 
-    cv2.imwrite("output_visualization.png", v.get_image()[:, :, ::-1])
+    cv2.imwrite(f"output_visualization_{img_id}.png", v.get_image()[:, :, ::-1])
     end_time=time.time()
     print(f"Time taken for script execution: {end_time - start_time:.2f} seconds")
 
