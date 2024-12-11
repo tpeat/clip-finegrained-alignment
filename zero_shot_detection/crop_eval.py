@@ -97,7 +97,7 @@ def crop_to_target_ratio(img, bbox, target_ratio):
     return cropped_img, new_bbox
 
 class CLIPEvaluator:
-    def __init__(self, coco_dir: str = "dataset/coco", use_white_square: bool = False):
+    def __init__(self, coco_dir: str = "dataset/coco", use_white_square: bool = False, debug: bool = False):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model, self.preprocess = clip.load("ViT-B/32", device=self.device)
         
@@ -107,12 +107,33 @@ class CLIPEvaluator:
         self.categories = {cat['id']: cat['name'] for cat in self.train_coco.loadCats(self.train_coco.getCatIds())}
 
         self.use_white_square = use_white_square
+        self.debug = debug
         
     def load_image(self, img_id: int) -> Tuple[Image.Image, dict]:
         """Load image given image ID"""
         img_info = self.train_coco.loadImgs(img_id)[0]
         img_path = os.path.join(self.coco_dir, 'train2017', img_info['file_name'])
         return Image.open(img_path).convert('RGB'), img_info
+
+    def get_random_different_category(self, img_id: int, current_category_id: int) -> str:
+        """Get a random category that's not present anywhere in the image"""
+        # Get all annotations for this image
+        ann_ids = self.train_coco.getAnnIds(imgIds=img_id)
+        anns = self.train_coco.loadAnns(ann_ids)
+        
+        # Get all category IDs present in this image
+        present_categories = {ann['category_id'] for ann in anns}
+        
+        # Filter out all categories that are present in the image
+        all_categories = list(self.categories.items())
+        filtered_categories = [(id, name) for id, name in all_categories 
+                            if id not in present_categories]
+        
+        if not filtered_categories:
+            raise ValueError("No suitable negative categories found for this image")
+            
+        random_id, random_name = random.choice(filtered_categories)
+        return random_name
     
     def get_clip_score(self, image: Image.Image, object_name: str) -> Tuple[float, float]:
         """Get CLIP scores for presence and absence of object"""
@@ -147,36 +168,73 @@ class CLIPEvaluator:
         else:
             image, img_info = self.load_image(img_id)
             bbox = annotation['bbox']
-        object_name = self.categories[annotation['category_id']]
 
-        save_dir = f"evaluation_images/{img_id}_{object_name}"
-        os.makedirs(save_dir, exist_ok=True)
+        true_object_name = self.categories[annotation['category_id']]
+        false_object_name = self.get_random_different_category(img_id, annotation['category_id'])
+        
+        if self.debug:
+            print("True object:", true_object_name)
+            print("False object:", false_object_name)
+
+            save_dir = f"evaluation_images/{img_id}_{true_object_name}"
+            os.makedirs(save_dir, exist_ok=True)
 
         results = {}
         
-        original_pos, original_neg = self.get_clip_score(image, object_name)
-        results['original'] = {
-            'positive_score': original_pos,
-            'negative_score': original_neg,
-            'correct': original_pos > original_neg
+        original_pos_true, original_neg_true = self.get_clip_score(image, true_object_name)
+        results['original_positive'] = {
+            'object_name': true_object_name,
+            'positive_score': original_pos_true,
+            'negative_score': original_neg_true,
+            'correct': original_pos_true > original_neg_true,
+            'ground_truth': 'positive'
         }
 
-        save_image_with_bbox(image, bbox, f"{save_dir}/original.png", 
-                           f"Original - {object_name} ({original_pos:.2f} vs {original_neg:.2f})")
+        original_pos_false, original_neg_false = self.get_clip_score(image, false_object_name)
+        results['original_negative'] = {
+            'object_name': false_object_name,
+            'positive_score': original_pos_false,
+            'negative_score': original_neg_false,
+            'correct': original_neg_false > original_pos_false,  # Note reversed condition
+            'ground_truth': 'negative'
+        }
+
+        if self.debug:
+            save_image_with_bbox(
+                image, bbox, 
+                f"{save_dir}/original_positive.png",
+                f"Original - True {true_object_name} ({original_pos_true:.2f} vs {original_neg_true:.2f})"
+            )
         
         crop_ratios = [0.05, 0.1]
         for ratio in crop_ratios:
             cropped_img, new_bbox = crop_to_target_ratio(image, bbox, ratio)
-            pos_score, neg_score = self.get_clip_score(cropped_img, object_name)
-            results[f'crop_{int(ratio*100):02d}'] = {
-                'positive_score': pos_score,
-                'negative_score': neg_score,
-                'correct': pos_score > neg_score
+
+            pos_score_true, neg_score_true = self.get_clip_score(cropped_img, true_object_name)
+            results[f'crop_{int(ratio*100):02d}_positive'] = {
+                'object_name': true_object_name,
+                'positive_score': pos_score_true,
+                'negative_score': neg_score_true,
+                'correct': pos_score_true > neg_score_true,
+                'ground_truth': 'positive'
             }
-            save_image_with_bbox(cropped_img, new_bbox, 
-                               f"{save_dir}/crop_{int(ratio*100)}.png",
-                               f"{int(ratio*100)}% Crop - {object_name} ({pos_score:.2f} vs {neg_score:.2f})")
-            
+
+            if self.debug:
+                save_image_with_bbox(
+                    cropped_img, new_bbox,
+                    f"{save_dir}/crop_{int(ratio*100)}_positive.png",
+                    f"{int(ratio*100)}% Crop - True {true_object_name} ({pos_score_true:.2f} vs {neg_score_true:.2f})"
+                )
+
+            pos_score_false, neg_score_false = self.get_clip_score(cropped_img, false_object_name)
+            results[f'crop_{int(ratio*100):02d}_negative'] = {
+                'object_name': false_object_name,
+                'positive_score': pos_score_false,
+                'negative_score': neg_score_false,
+                'correct': neg_score_false > pos_score_false,  # Note reversed condition
+                'ground_truth': 'negative'
+            }
+                
         return results
     
     def run_evaluation(self, num_samples: int = 100) -> Dict[str, dict]:
@@ -206,11 +264,14 @@ class CLIPEvaluator:
         }
     
     def _aggregate_results(self, results: List[dict]) -> dict:
-        """Aggregate results across all evaluated images"""
+        """Aggregate results across all evaluated images, separating positive and negative samples"""
         stats = {
-            'original': {'correct': 0, 'avg_positive': 0, 'avg_negative': 0},
-            'crop_05': {'correct': 0, 'avg_positive': 0, 'avg_negative': 0},
-            'crop_10': {'correct': 0, 'avg_positive': 0, 'avg_negative': 0}
+            'original_positive': {'correct': 0, 'avg_positive': 0, 'avg_negative': 0},
+            'original_negative': {'correct': 0, 'avg_positive': 0, 'avg_negative': 0},
+            'crop_05_positive': {'correct': 0, 'avg_positive': 0, 'avg_negative': 0},
+            'crop_05_negative': {'correct': 0, 'avg_positive': 0, 'avg_negative': 0},
+            'crop_10_positive': {'correct': 0, 'avg_positive': 0, 'avg_negative': 0},
+            'crop_10_negative': {'correct': 0, 'avg_positive': 0, 'avg_negative': 0}
         }
         
         n = len(results)
@@ -232,10 +293,12 @@ def main():
     os.makedirs("evaluation_images", exist_ok=True)
 
     # white square is a sanity check to make sure its paying attention to visuals
-    use_white_square = True
-    evaluator = CLIPEvaluator("../dataset/coco", use_white_square=use_white_square)
+    use_white_square = False
+    debug = False
+    evaluator = CLIPEvaluator("../dataset/coco", use_white_square=use_white_square, debug=debug)
     
-    results = evaluator.run_evaluation(num_samples=5)
+    num_samples = 500 # TODO: scale this
+    results = evaluator.run_evaluation(num_samples=num_samples)
 
     with open('clip_evaluation_results.json', 'w') as f:
         json.dump(results, f, indent=2)
