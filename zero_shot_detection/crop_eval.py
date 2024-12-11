@@ -12,17 +12,9 @@ import json
 from typing import Tuple, Dict, List
 
 def create_white_square_image(image_size=(224, 224), bbox=None):
-    """Create a white image with an optional white square at bbox location"""
-    # Create black background
-    img = Image.new('RGB', image_size, color='black')
-    
-    if bbox is not None:
-        # Draw white square at bbox location
-        from PIL import ImageDraw
-        draw = ImageDraw.Draw(img)
-        draw.rectangle([bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]], 
-                      fill='white')
-    
+    """Plain white image"""
+    img = Image.new('RGB', image_size, color='white')
+    # NOTE: if you add a white square to this, then its flips is guess to positive
     return img
 
 def save_image_with_bbox(image, bbox, save_path, title=""):
@@ -240,7 +232,7 @@ def main():
     os.makedirs("evaluation_images", exist_ok=True)
 
     # white square is a sanity check to make sure its paying attention to visuals
-    use_white_square = False
+    use_white_square = True
     evaluator = CLIPEvaluator("../dataset/coco", use_white_square=use_white_square)
     
     results = evaluator.run_evaluation(num_samples=5)
