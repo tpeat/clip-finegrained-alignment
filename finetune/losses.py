@@ -44,70 +44,86 @@ class CLIPCountLoss(nn.Module):
         self.count_alpha = count_alpha
         
     def count_loss(self, ei: torch.Tensor, ek: torch.Tensor, 
-                   ek_cf: torch.Tensor, countplus: bool = False) -> torch.Tensor:
+                   counts: torch.Tensor) -> torch.Tensor:
         device = ei.device
+        batch_size = ei.size(0)
+        group_size = counts.size(0) // batch_size  # Number of captions per image (1 positive + negatives)
         
-        if not countplus:
-            # one counterfactual, impossible in current dataset, but for sake of completeness
-            ei = ei.to(device, dtype=torch.float64)
-            ek = ek.to(device, dtype=torch.float64)
-            ek_cf = ek_cf.to(device, dtype=torch.float64)
+        # Convert to float64 for better numerical stability
+        ei = ei.to(device, dtype=torch.float64)
+        ek = ek.to(device, dtype=torch.float64)
+        
+        if ei.dim() > 2:
+            ei = ei.squeeze(1)
+        if ek.dim() > 2:
+            ek = ek.squeeze(1)
             
-            ei = ei / ei.norm(dim=-1, keepdim=True)
-            ek = ek / ek.norm(dim=-1, keepdim=True)
-            ek_cf = ek_cf / ek_cf.norm(dim=-1, keepdim=True)
+        # Normalize embeddings
+        ei = ei / ei.norm(dim=-1, keepdim=True)
+        ek = ek / ek.norm(dim=-1, keepdim=True)
+        
+        # Initialize loss
+        loss = torch.tensor(0.0, device=device, dtype=torch.float64)
+        
+        # Process each image with its group of captions (positive + negatives)
+        for i in range(batch_size):
+            # Get current image embedding
+            curr_ei = ei[i]
             
-            sim_pos = torch.sum(ei * ek, dim=-1)
-            sim_neg = torch.sum(ei * ek_cf, dim=-1)
+            # Get corresponding group of text embeddings and counts
+            start_idx = i * group_size
+            end_idx = (i + 1) * group_size
+            group_ek = ek[start_idx:end_idx]
+            group_counts = counts[start_idx:end_idx]
             
-            loss = -torch.log(torch.exp(sim_pos) / (torch.exp(sim_pos) + torch.exp(sim_neg)))
-            return loss.mean()
-        else:
-            # multiple negatives
-            ei = ei.to(device, dtype=torch.float64)
-            ek = ek.to(device, dtype=torch.float64)
-            ek_cf = ek_cf.to(device, dtype=torch.float64)
+            # First embedding in group is positive example (correct count)
+            pos_sim = torch.dot(curr_ei, group_ek[0])
             
-            ei = ei / ei.norm(dim=-1, keepdim=True)
-            ek = ek / ek.norm(dim=-1, keepdim=True)
+            # Rest are negative examples (wrong counts)
+            neg_sims = torch.matmul(curr_ei, group_ek[1:].t())
             
-            num = torch.exp(torch.sum(ei * ek, dim=-1))
-            deno = torch.zeros_like(num)
+            # Compute contrastive loss
+            numerator = torch.exp(pos_sim / self.temperature)
+            denominator = numerator + torch.sum(torch.exp(neg_sims / self.temperature))
+            loss += -torch.log(numerator / denominator)
             
-            # use size of e_f for flexible number of inputs in the future
-            num_counterfactuals = len(ek_cf)
-            for i in range(num_counterfactuals):
-                e = ek_cf[i].to(device, dtype=torch.float64)
-                e = e / e.norm(dim=-1, keepdim=True)
-                deno += torch.exp(torch.sum(ei * e, dim=-1))
-            
-            loss = -torch.log(num / (num + deno))
-            return loss.mean()
+        return loss / batch_size
 
     def forward(self, image_features: torch.Tensor, text_features: torch.Tensor,
-                count_features: Optional[torch.Tensor] = None,
-                countplus: bool = False) -> Dict[str, torch.Tensor]:
+                count_features: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
         device = image_features.device
+        batch_size = image_features.size(0)
         
-        # vanilla slip loss
+        # Normalize features
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
         
+        # Get expanded batch size (with templates)
+        expanded_batch_size = text_features.size(0)
+        num_templates = expanded_batch_size // batch_size
+        
+        # Repeat image features to match text features size
+        image_features = image_features.repeat_interleave(num_templates, dim=0)
+        
+        # Create labels for the expanded batch
+        labels = torch.arange(expanded_batch_size, device=device)
+        
+        # Compute CLIP loss with expanded features
         logits = (image_features @ text_features.t()) / self.temperature
-        labels = torch.arange(len(image_features), device=device)
         
         loss_i = self.cross_entropy(logits, labels)
         loss_t = self.cross_entropy(logits.t(), labels)
         clip_loss = (loss_i + loss_t) / 2.0
         
-        # weights loss by alpha, but its really lambda
+        # Count loss calculation
         count_loss = torch.tensor(0.0, device=device)
         if count_features is not None:
-            count_features = count_features.to(device)
-            count_loss = self.count_loss(image_features, text_features, 
-                                       count_features, countplus) * self.count_alpha
+            count_loss = self.count_loss(
+                image_features,  # Use expanded image features
+                text_features,
+                count_features
+            ) * self.count_alpha
         
-        # in original paper, they use lambda as the weight
         total_loss = clip_loss + count_loss
         
         return {
@@ -245,4 +261,49 @@ class SPARCLoss(nn.Module):
             "loss_lv": loss_lv,
             "loss_vl_local": loss_vl_local,
             "loss_lv_local": loss_lv_local
+        }
+
+
+class CountLoss(nn.Module):
+    def __init__(self, temperature: float = 0.07, alpha = 1.0):
+        super().__init__()
+        self.temperature = temperature
+        self.alpha = alpha
+        self.cross_entropy = nn.CrossEntropyLoss()
+
+    def forward(self, img_logits, text_logits, ei, ek, ek_cf):
+        # contrastive loss
+        device = img_logits.device
+        ground_truth = torch.arange(len(img_logits), dtype=torch.long, device=device)
+        clip_loss = (self.cross_entropy(img_logits, ground_truth) + 
+                       self.cross_entropy(text_logits, ground_truth)) / 2
+
+        # Normalize all embeddings
+        ei = ei / ei.norm(dim=1, keepdim=True)          # [batch_size, embed_dim]
+        ek = ek / ek.norm(dim=1, keepdim=True)          # [batch_size, embed_dim]
+        ek_cf = ek_cf / ek_cf.norm(dim=2, keepdim=True) # [batch_size, num_cf, embed_dim]
+        
+        # Calculate numerator (correct scores) for all examples
+        correct_scores = torch.sum(ei * ek, dim=1) / self.temperature # [batch_size]
+        numerator = torch.exp(correct_scores)        # [batch_size]
+        
+        # Calculate denominator using matrix multiplication
+        # First reshape ei for broadcasting
+        ei_expanded = ei.unsqueeze(1)  # [batch_size, 1, embed_dim]
+        
+        # Compute all counterfactual scores at once
+        cf_scores = torch.sum(ei_expanded * ek_cf, dim=2) / self.temperature # [batch_size, num_cf]
+        denominator = torch.sum(torch.exp(cf_scores), dim=1)  # [batch_size]
+        
+        # Compute final loss
+        losses = -torch.log(numerator / denominator)
+        
+        count_loss = losses.mean()
+
+        total_loss = clip_loss + self.alpha * count_loss
+
+        return {
+            "clip_loss": clip_loss,
+            "count_loss": count_loss,
+            "total_loss": total_loss
         }
