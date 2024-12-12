@@ -279,6 +279,7 @@ def main():
             if pred_box is None:
                 print(f"No detection found at {label}")
                 continue
+                
             matched_boxes.append([pred_box,label])
             detector.plot_image_with_boxes(image, [pred_box], [label], save_name=f"{label}")
 
