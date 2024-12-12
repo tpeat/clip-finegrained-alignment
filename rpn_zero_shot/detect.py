@@ -5,45 +5,50 @@ https://github.com/deepmancer/clip-object-detection/tree/main
 And inspired from Facebook Detectron's pascal_voc_evaluation.py
 
 """
-import requests
-from pascal_data import label_prompts, pascal_classes
-from io import BytesIO
-import xml.etree.ElementTree as ET
+# import requests
+# import orjson
+import os
+import time
+import json
 import numpy as np
-import matplotlib.pyplot as plt
+import xml.etree.ElementTree as ET
+from collections import defaultdict
+from io import BytesIO
 from PIL import Image
+
+import matplotlib.pyplot as plt
 import torch
-import torch.nn.functional
-import torchvision
-from torchvision import transforms
-from torchvision.utils import draw_bounding_boxes
-import clip
-import argparse
-from torchvision.models.detection import fasterrcnn_resnet50_fpn
+import torch.nn.functional as F
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
-from torchvision.transforms import functional as F
 from tqdm import tqdm
-import os
-from collections import defaultdict
-import detectron2
+from torchvision import transforms
+from torchvision.models.detection import fasterrcnn_resnet50_fpn
+from torchvision.transforms import functional as TF
+from torchvision.utils import draw_bounding_boxes
 
-class PascalVOCDetectionEvaluator:
-    def __init__(self, annotations, class_names):
-        self.annotations = annotations
-        self.class_names = class_names
+import clip
+from detectron2.data.datasets import register_coco_instances, register_pascal_voc
 
-    def evaluate(self, predictions, iou_threshold=0.5):
-        aps = {}
-        for class_name in self.class_names:
-            gt_boxes = {img_id: [obj["bbox"] for obj in objs if obj["name"] == class_name] 
-                        for img_id, objs in self.annotations.items()}
-            pred_boxes = predictions.get(class_name, [])
-            rec, prec, ap = voc_eval(
-                pred_boxes, gt_boxes, ovthresh=iou_threshold
-            )
-            aps[class_name] = ap
-        return aps
+from pascal_data import label_prompts, pascal_classes
+
+
+# class PascalVOCDetectionEvaluator:
+#     def __init__(self, annotations, class_names):
+#         self.annotations = annotations
+#         self.class_names = class_names
+
+#     def evaluate(self, predictions, iou_threshold=0.5):
+#         aps = {}
+#         for class_name in self.class_names:
+#             gt_boxes = {img_id: [obj["bbox"] for obj in objs if obj["name"] == class_name] 
+#                         for img_id, objs in self.annotations.items()}
+#             pred_boxes = predictions.get(class_name, [])
+#             rec, prec, ap = voc_eval(
+#                 pred_boxes, gt_boxes, ovthresh=iou_threshold
+#             )
+#             aps[class_name] = ap
+#         return aps
 
 
 def parse_voc_annotations(annotations_dir):
@@ -75,15 +80,17 @@ class ZeroShotObjectDetection:
         self.faster_rcnn.eval() # hv to run in inference mode
 
         os.makedirs("viz",exist_ok=True)
+        os.makedirs("results",exist_ok=True)
+
     
-    def store_predictions(self, predictions, image_id, class_name, boxes, scores):
-        for box, score in zip(boxes, scores):
-            x_min, y_min, x_max, y_max = box
-            # VOC requires +1 coordinate adjustments
-            x_min, y_min = x_min + 1, y_min + 1
-            predictions[class_name].append(
-                f"{image_id} {score:.3f} {x_min:.1f} {y_min:.1f} {x_max:.1f} {y_max:.1f}"
-            )
+    # def store_predictions(self, predictions, image_id, class_name, boxes, scores):
+    #     for box, score in zip(boxes, scores):
+    #         x_min, y_min, x_max, y_max = box
+    #         # VOC requires +1 coordinate adjustments
+    #         x_min, y_min = x_min + 1, y_min + 1
+    #         predictions[class_name].append(
+    #             f"{image_id} {score:.3f} {x_min:.1f} {y_min:.1f} {x_max:.1f} {y_max:.1f}"
+    #         )
 
     def detect(self,image_path,text_queries,score_threshold=0.5):
         image = Image.open(image_path).convert("RGB")
@@ -221,25 +228,62 @@ class ZeroShotObjectDetection:
             "all_region_proposal_boxes": all_region_proposal_boxes,
             "candidates": frcnn_outputs,
         }
+    
+    def evaluate_dataset(self, coco, dataset_type, image_dir, annotation_file, text_queries, score_threshold=0.5):
+        # coco = COCO(annotation_file)
+        results = []
+        img_ids = coco.getImgIds()
+
+        for img_id in tqdm(img_ids, desc=f"Evaluating {dataset_type.upper()} dataset"):
+            img_info = coco.loadImgs(img_id)[0]
+            img_path = os.path.join(image_dir, img_info['file_name'])
+
+            ann_ids = coco.getAnnIds(imgIds=img_id)
+            anns = coco.loadAnns(ann_ids)
+
+            for category_id, category_info in coco.cats.items():
+                if "name" not in category_info:
+                    print(f"Missing 'name' in category_info: {category_info}")
+                    continue
+                category_name = category_info["name"]
+                if category_name not in text_queries:
+                    print(f"Skipping category: {category_name} not in text_queries")
+                    continue
+                prompts = text_queries[category_name]
+                pred_box = self.detect(img_path, prompts, score_threshold)
+                if pred_box is not None:
+                    x_min, y_min, x_max, y_max = pred_box
+                    result = {
+                        "image_id": img_id,
+                        "category_id": category_id,
+                        "bbox": [x_min,y_min,x_max-x_min, y_max-y_min],
+                        "score": 1.0
+                    }
+                    results.append(result)
+                
+        output_file = f"results/{dataset_type}_results_{int(time.time())}.json"
+        with open(output_file, "w") as f:
+            json.dump(results, f)
+        
+        coco_dt = coco.loadRes(output_file)
+        coco_eval = COCOeval(coco, coco_dt, iouType='bbox')
+        coco_eval.evaluate()
+        coco_eval.accumulate()
+        coco_eval.summarize()
+
+        return results
 
     
 
 # inherits, extends functionality for larger datasets for speed and scalability
-class ZeroShotObjectDetectionDatasets(ZeroShotObjectDetection):
+class ZeroShotObjectDetectionScaled(ZeroShotObjectDetection):
     def __init__(self, clip_model_name="ViT-B/32", device=None):
         super().__init__(clip_model_name, device)
 
-    def eval(self, image_paths, annotations_path, text_queries, score_threshold=0.5):
-        predictions = defaultdict(list)  # Store predictions
-        for image_path in tqdm(image_paths):
-            image_id = os.path.splitext(os.path.basename(image_path))[0]
-            for class_name, prompts in text_queries.items():
-                pred_box = self.detect(image_path, prompts, score_threshold=score_threshold)
-                if pred_box is not None:
-                    # VOC format
-                    self.store_predictions(predictions, image_id, class_name, [pred_box], [1.0]) 
 
-        return predictions
+    def evaluate_dataset(self, coco, dataset_type, image_dir, annotation_file, text_queries, score_threshold=0.5):
+        pass
+    
 
 
 def parse_args():
@@ -255,9 +299,10 @@ def parse_args():
     )
 
     parser.add_argument("--debug",action="store_true",help="Test detector on a single image specified with --image_path, saved to './viz' dir")
+    parser.add_argument("--naive",action="store_true",help="Really slow and iterative eval")
     parser.add_argument("--dataset_name",required=False,help="Name of the dataset (e.g., VOC 2007, VOC 2012)")
     parser.add_argument("--image_dir", type=str, required=False, help="Directory containing the dataset images")
-    parser.add_argument("--annotations_dir", type=str, required=False, help="Directory containing dataset annotations")
+    parser.add_argument("--annotation_file", type=str, required=False, help="Directory containing dataset annotations")
 
     
     return parser.parse_args()
@@ -268,8 +313,8 @@ def main():
     # detections = detector.detect(args.image_path, pascal_classes, score_threshold=args.score_threshold)
     # detector.plot_detections(args.image_path, detections, output_path=args.output_test_path)
 
+    detector = ZeroShotObjectDetection()
     if (args.debug):
-        detector = ZeroShotObjectDetection()
         matched_boxes=[]
         image = Image.open(args.image_path).convert("RGB")
 
@@ -279,25 +324,51 @@ def main():
             if pred_box is None:
                 print(f"No detection found at {label}")
                 continue
-                
             matched_boxes.append([pred_box,label])
             detector.plot_image_with_boxes(image, [pred_box], [label], save_name=f"{label}")
-
-
         detector.plot_image_with_boxes(image, [box[0] for box in matched_boxes], [box[1] for box in matched_boxes], save_name="final")
     elif args.dataset_name.lower() == 'pascal' or args.dataset_name.lower() == 'pascal_mini':
         image_dir = args.image_dir
         annotations_dir = args.annotations_dir
         image_paths = [os.path.join(image_dir, img) for img in os.listdir(image_dir) if img.endswith(".jpg")]
         annotations = parse_voc_annotations(annotations_dir)
-        # print(annotations)
-        detector = ZeroShotObjectDetectionDatasets()
-        predictions = detector.eval(image_paths, annotations_dir, label_prompts)
-        # evaluator = PascalVOCDetectionEvaluator(annotations, pascal_classes)
-        # aps = evaluator.evaluate(predictions)
-        # print(f"AP Results: {aps}")
+        return
+    elif args.dataset_name.lower() == 'coco' and args.naive:
+        coco = COCO(args.annotation_file)
+        text_queries = {
+            cat['name']: [f"a {cat['name']}"] 
+            for cat_id, cat in coco.cats.items()
+        }
+        detector.evaluate_dataset(
+            coco=coco,
+            dataset_type=args.dataset_name,
+            image_dir=args.image_dir,
+            annotation_file=args.annotation_file,
+            text_queries=text_queries,
+            score_threshold=args.score_threshold
+        )
+    elif args.dataset_name.lower() =='coco' and args.naive is None:
+        pass
+    elif args.dataset_name.lower() == 'lvis':
+        lvis = LVIS(args.annotation_file)
+        text_queries = {
+            cat['name']: [f"a {cat['name']}"] 
+            for cat in lvis.dataset['categories']
+        }
+        detector.evaluate_dataset(
+            dataset_type=args.dataset_name,
+            image_dir=args.image_dir,
+            annotation_file=args.annotation_file,
+            text_queries=text_queries,
+            score_threshold=args.score_threshold
+        )
     else:
         print("Not yet supported")
+        return 
+    
+    
+    
+
 
 if __name__ == "__main__":
     main()
